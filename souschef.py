@@ -17,7 +17,7 @@ import time
 from urllib.error import URLError
 from urllib.parse import urlparse, urljoin
 
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 from le_utils.constants import licenses, file_formats
 import pafy
 import requests
@@ -34,8 +34,10 @@ CHANNEL_NAME = "EDSITEment"              # Name of channel
 CHANNEL_SOURCE_ID = "edsitement-testing" # Channel's unique id    # change to just 'edsitement' for prod
 CHANNEL_DOMAIN = "edsitement.neh.gov"         # Who is providing the content
 CHANNEL_LANGUAGE = "en"      # Language of channel
-CHANNEL_DESCRIPTION = None                                  # Description of the channel (optional)
-CHANNEL_THUMBNAIL = None                                    # Local path or url to image file (optional)
+CHANNEL_DESCRIPTION = """EDSITEment is a partnership between the National Endowment for the Humanities and the National Trust for the Humanities.
+
+EDSITEment offers a treasure trove for teachers, students, and parents searching for high-quality material on the Internet in the subject areas of literature and language arts, foreign languages, art and culture, and history and social studies."""                                  # Description of the channel (optional)
+CHANNEL_THUMBNAIL = "https://www.neh.gov/files/imagecache/explore_large/explore/images/edsitement.jpg"                                    # Local path or url to image file (optional)
 PATH = path_builder.PathBuilder(channel_name=CHANNEL_NAME)  # Keeps track of path to write to csv
 WRITE_TO_PATH = "{}{}{}.zip".format(os.path.dirname(os.path.realpath(__file__)), os.path.sep, CHANNEL_NAME) # Where to generate zip file
 
@@ -150,9 +152,10 @@ def lesson_plans(lesson_plans_subject):
         title = page.find("h2", class_="subject-area").text
         LOGGER.info("- Subject:"+title)
         LOGGER.info("- [url]:"+lesson_url)
-        for sub_lesson in itertools.islice(sub_lessons, LESSON_PLANS_INIT, LESSON_PLANS_END): #MAX NUMBER OF LESSONS
+        for seq, sub_lesson in enumerate(itertools.islice(sub_lessons, LESSON_PLANS_INIT, LESSON_PLANS_END)): #MAX NUMBER OF LESSONS
             resource_a = sub_lesson.find("a", href=True)
             resource_url = resource_a["href"].strip()
+            LOGGER.info("SEQ ID: {}".format(LESSON_PLANS_INIT+seq))
             time.sleep(TIME_SLEEP)
             yield urljoin(BASE_URL, resource_url), levels + [title]
 
@@ -202,6 +205,20 @@ def remove_links(content):
             link.replaceWithChildren()
 
 
+#add a span tag as parent to an "a" element and his href 
+def link_to_text(content):
+    if content is not None:
+        for tag in content.find_all("a"):
+            span = Tag(name="span")
+            if tag.get("href", ""):
+                url = tag["href"]
+                if url.endswith(".pdf"):
+                    pass
+                elif url.startswith("http") or url.startswith("/"):
+                    tag.wrap(span)
+                    span.insert(1, " ("+url+")")
+
+
 def has_copyright(content):
     for license in content.findAll(text=re.compile('license', flags=re.IGNORECASE)):
         license = license.lower()
@@ -230,7 +247,8 @@ class Menu(object):
             zipper.write_index_contents(content)
 
     def to_file(self):
-        self.write('<html><body><meta charset="UTF-8"></head><ul>'+self.to_html()+'</ul></body></html>')
+        html = '<html><head><meta charset="utf-8"><link rel="stylesheet" href="css/styles.css"></head><body><div class="main-content-with-sidebar">{}</div><script src="js/scripts.js"></script></body></html>'.format(self.to_html())
+        self.write(html)
 
     def menu_titles(self, titles):
         for title in titles:
@@ -249,9 +267,14 @@ class Menu(object):
             "text": title
         }
 
-    def to_html(self):
-        return "".join(
-            '<li><a href="files/{filename}">{text}</a></li>'.format(**e) for e in self.menu.values())
+    def to_html(self, directory="files/", active_li=None):
+        li = ['<ul class="sidebar-items">']
+        for e in self.menu.values():
+            li.append("<li>")
+            li.append('<a href="{directory}{filename}" class="sidebar-link">{text}</a>'.format(directory=directory, **e))
+            li.append("</li>")
+        li.append("</ul>")
+        return "".join(li)
 
 
 class LessonSection(object):
@@ -273,6 +296,7 @@ class LessonSection(object):
 
     def get_content(self):
         content = self.body.find("div", class_="text")
+        link_to_text(content)
         remove_links(content)
         return "".join([str(p) for p in content])
 
@@ -280,15 +304,28 @@ class LessonSection(object):
         with html_writer.HTMLWriter(self.filename, "a") as zipper:
             zipper.write_contents(filename, content, directory="files")
 
-    def to_file(self, filename):
+    def write_css_js(self, filepath):
+        with html_writer.HTMLWriter(filepath, "a") as zipper, open("chefdata/styles.css") as f:
+            content = f.read()
+            zipper.write_contents("styles.css", content, directory="css/")
+
+        with html_writer.HTMLWriter(filepath, "a") as zipper, open("chefdata/scripts.js") as f:
+            content = f.read()
+            zipper.write_contents("scripts.js", content, directory="js/")
+
+    def to_file(self, filename, menu_index=None):
         if self.body is not None and filename is not None:
             content = self.get_content()
             if self.title:
                 content = self.title+""+content
 
-            self.write(filename, '<html><head><meta charset="UTF-8"></head><body>{}<body></html>'.format(
-                content
-            ))
+            if menu_index is not None:
+                html = '<html><head><meta charset="utf-8"><link rel="stylesheet" href="../css/styles.css"></head><body><div class="sidebar"><a class="sidebar-link toggle-sidebar-button" href="javascript:void(0)" onclick="javascript:toggleNavMenu();">&#9776;</a>{}</div><div class="main-content-with-sidebar">{}</div><script src="../js/scripts.js"></script></body></html>'.format(menu_index, content)
+            else:
+                html = '<html><head><meta charset="utf-8"><link rel="stylesheet" href="../css/styles.css"></head><body><div class="main-content-with-sidebar">{}</div><script src="../js/scripts.js"></script></body></html>'.format(content)
+
+            self.write(filename, html)
+            self.write_css_js(self.filename)
 
 
 class Introduction(LessonSection):
@@ -345,6 +382,7 @@ class TheBasics(LessonSection):
             id_="sect-thebasics", menu_name="the_basics")
 
     def get_content(self):
+        link_to_text(self.body)
         remove_links(self.body)
         return str(self.body)
 
@@ -371,16 +409,20 @@ class Resources(object):
     def get_credits(self):
         resource_img = self.body.find("li", class_="lesson-image")
         if resource_img is not None:
+            link_to_text(resource_img)
             remove_links(resource_img)
             credits = "".join(map(str, resource_img.findChildren("p")))
             return credits
 
     def get_pdfs(self):
         resource_links = self.body.find_all("a")
+        pdfs = []
         for link in resource_links:
-            if link["href"].endswith(".pdf"):
+            if link.get("href", "").endswith(".pdf"):
                 name = get_name_from_url(link["href"])
-                yield name, urljoin(BASE_URL, link["href"])
+                LOGGER.info("   + Filename: {}".format(name))
+                pdfs.append((name, urljoin(BASE_URL, link["href"])))
+        return pdfs
 
     def student_resources(self):
         resources = self.body.find("dd", id="student-resources")
@@ -442,13 +484,23 @@ class LessonPlan(object):
             title = re.sub(" +", " ", title)
         return title
 
+    def rename_pdfs(self, pdfs):
+        renamed_pdf_files = []
+        for _, pdf_url in pdfs:
+            name = "{}.pdf".format(self.title)
+            LOGGER.info("   + Filename renamed: {}".format(name))
+            renamed_pdf_files.append((name, pdf_url))
+        return renamed_pdf_files
+
     def to_file(self, PATH, levels):
         LOGGER.info(" + Lesson:"+ self.title)
         self.menu.to_file()
         for Section in self.sections:
             section = Section(self.page, filename=self.menu.filename)
-            section.to_file(self.menu.get(section.menu_name))
-        self.resources.to_file()
+            menu_filename = self.menu.get(section.menu_name)
+            menu_index = self.menu.to_html(directory="", active_li=menu_filename)
+            section.to_file(menu_filename, menu_index=menu_index)
+        #self.resources.to_file() download and save images
         metadata_dict = {"description": "",
             "language": "en",
             "license": licenses.CC_BY,
@@ -461,7 +513,12 @@ class LessonPlan(object):
         writer.add_file(str(PATH), "THE LESSON", self.menu.filename, **metadata_dict)
         writer.add_folder(str(PATH), "RESOURCES", **metadata_dict)
         PATH.set(*(levels+["RESOURCES"]))
-        for name, pdf_url in self.resources.get_pdfs():
+        ##rename pdf files when the lesson have only one file
+        pdfs = self.resources.get_pdfs()
+        if len(pdfs) == 1:
+            pdfs = self.rename_pdfs(pdfs)
+
+        for name, pdf_url in pdfs:
             meta = metadata_dict.copy()
             meta["source_id"] = pdf_url
             try:
@@ -512,6 +569,7 @@ class StudentResourceIndex(object):
         created = content.find("div", class_="created")
         self.description = content.find("p")
         if self.description is not None:
+            link_to_text(self.description)
             remove_links(self.description)
         return "".join(map(str, [self.title, created, self.description]))
 
@@ -529,7 +587,7 @@ class StudentResourceIndex(object):
             self.write_img(img_url, filename)
 
     def to_file(self):
-        img_url = self.get_img_url()
+        img_url = None#self.get_img_url()
         if img_url is not None:
             filename_img = get_name_from_url(img_url)
             img_tag = "<img alt='{img}' src='files/{img}'>".format(img=filename_img)
@@ -555,7 +613,11 @@ class StudentResourceIndex(object):
                 for file_src, file_metadata in resource.resources_files:
                     try:
                         meta = file_metadata if len(file_metadata) > 0 else metadata_dict
-                        writer.add_file(str(PATH), get_name_from_url_no_ext(file_src), file_src, **meta)
+                        filename = get_name_from_url_no_ext(file_src)
+                        if file_src.endswith(".pdf"):
+                            filename = "{}_{}".format(self.title.text, filename)
+                            LOGGER.info("   * " + filename)
+                        writer.add_file(str(PATH), filename, file_src, **meta)
                     except requests.exceptions.HTTPError as e:
                         LOGGER.info("Error: {}".format(e))
                 PATH.go_to_parent_folder()
@@ -681,6 +743,15 @@ class WebPageSource(ResourceType):
         with html_writer.HTMLWriter(filepath, "w") as zipper:
             zipper.write_index_contents(content)
 
+    def write_css_js(self, filepath):
+        with html_writer.HTMLWriter(filepath, "a") as zipper, open("chefdata/styles.css") as f:
+            content = f.read()
+            zipper.write_contents("styles.css", content, directory="css/")
+
+        with html_writer.HTMLWriter(filepath, "a") as zipper, open("chefdata/scripts.js") as f:
+            content = f.read()
+            zipper.write_contents("scripts.js", content, directory="js/")
+
     def swf_content(self, content):
         obj = content.find("object")
         if obj is not None and obj["type"] == "application/x-shockwave-flash":
@@ -713,8 +784,8 @@ class WebPageSource(ResourceType):
                 self.add_resources_files(file_, metadata_files)
             #for img in images:
             #    self.add_resources_files(img)
-            self.write('<html><body><head><meta charset="UTF-8"></head>'+\
-                        str(content)+'</body><html>', filepath)
+            self.write('<html><head><meta charset="utf-8"><link rel="stylesheet" href="css/styles.css"></head><body><div class="main-content-with-sidebar">'+str(content)+'</div><script src="js/scripts.js"></script></body></html>', filepath)
+            self.write_css_js(filepath)
             return metadata_dict
 
     def remove_external_links(self, content):
@@ -866,10 +937,24 @@ class SoundCloudResource(VimeoResource):
         self.file_format = file_formats.MP3
 
 
+def download_css_js():
+    css = os.path.join(os.path.dirname(os.path.realpath(__file__)), "chefdata/styles.css")
+    js = os.path.join(os.path.dirname(os.path.realpath(__file__)), "chefdata/scripts.js")
+    if not if_file_exists(css) or not if_file_exists(js):
+        LOGGER.info("Downloading styles")
+        r = requests.get("https://raw.githubusercontent.com/learningequality/html-app-starter/master/css/styles.css")
+        with open("chefdata/styles.css", "wb") as f:
+            f.write(r.content)
+
+        r = requests.get("https://raw.githubusercontent.com/learningequality/html-app-starter/master/js/scripts.js")
+        with open("chefdata/scripts.js", "wb") as f:
+            f.write(r.content)
+
+
 # CLI: This code will run when the sous chef is called from the command line
 ################################################################################
 if __name__ == '__main__':
-
+    download_css_js()
     # Open a writer to generate files
     with data_writer.DataWriter(write_to_path=WRITE_TO_PATH) as writer:
 
